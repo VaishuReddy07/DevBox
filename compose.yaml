@@ -1,0 +1,85 @@
+name: devbox
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-devbox}:${POSTGRES_PASSWORD:-devbox_local_only}@postgres:5432/${POSTGRES_DB:-devbox}
+  REDIS_URL: redis://redis:6379/0
+  PUBSUB_EMULATOR_HOST: pubsub:8085
+  PUBSUB_PROJECT_ID: ${PUBSUB_PROJECT_ID:-devbox-local}
+  APP_ENV: ${APP_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-devbox}
+      POSTGRES_USER: ${POSTGRES_USER:-devbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devbox_local_only}
+    ports: ["${DEVBOX_POSTGRES_PORT:-55432}:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    ports: ["${DEVBOX_REDIS_PORT:-56379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: ["gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=devbox-local"]
+    ports: ["${DEVBOX_PUBSUB_PORT:-58085}:8085"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/8085"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+  api:
+    build: .
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "true"
+    ports: ["${DEVBOX_API_PORT:-8100}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      pubsub: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    environment: *app-env
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+  scheduler:
+    build: .
+    command: ["python", "-m", "app.scheduler"]
+    env_file: .env
+    environment: *app-env
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+  notifier:
+    build: .
+    command: ["python", "-m", "app.notifier"]
+    env_file: .env
+    environment: *app-env
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+volumes:
+  postgres_data:

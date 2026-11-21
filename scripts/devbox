@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+command_name="${1:-up}"
+case "$command_name" in
+  up)
+    [[ -f .env ]] || cp .env.example .env
+    docker compose up --build -d
+    printf 'DevBox is ready: http://localhost:8100/docs\n'
+    ;;
+  down) docker compose down ;;
+  seed) docker compose exec api python -m app.seed ;;
+  reset) docker compose exec api python -m app.reset ;;
+  logs) docker compose logs -f api worker scheduler notifier ;;
+  clean) docker compose down -v --remove-orphans ;;
+  *) echo "Usage: scripts/devbox {up|down|seed|reset|logs|clean}" >&2; exit 2 ;;
+esac
